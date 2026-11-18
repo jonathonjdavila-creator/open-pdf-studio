@@ -540,6 +540,43 @@ export function createPluginApi(pluginId) {
       return createAnnotation(props);
     },
 
+    // Convert procedural palette triangles to a genuine ECMA-363 U3D stream.
+    async encodeEquipmentU3D(mesh, name = 'Equipment') {
+      const { encodeU3D } = await import('../pdf/three-d/u3d-encoder.js');
+      return encodeU3D(mesh, name);
+    },
+
+    async save3DModelPdfCopy({ format = 'U3D', modelBytes, posterPng, rect, pageNumber, title }) {
+      const doc = getActiveDocument();
+      if (!doc || !doc.pdfDoc) throw new Error('Open a PDF first');
+      if (!Number.isInteger(pageNumber) || pageNumber !== doc.currentPage)
+        throw new Error('The selected page changed. Reopen the palette.');
+      if (!(modelBytes instanceof Uint8Array)) throw new TypeError('Expected a U3D or PRC byte buffer');
+      const current = doc;
+      const { getCachedPdfBytes } = await import('../pdf/loader.js');
+      const { readBinaryFile, saveFileDialog, writeBinaryFile } = await import('../core/platform.js');
+      const { PDFDocument } = await import('pdf-lib');
+      const { embed3DAnnotation } = await import('../pdf/three-d/embed-3d.js');
+      let bytes = getCachedPdfBytes(doc.filePath) || getCachedPdfBytes(`__memory__${doc.id}`);
+      if (!bytes && doc.filePath) bytes = await readBinaryFile(doc.filePath);
+      if (!bytes) throw new Error('Cannot access source PDF bytes. Save the document first.');
+      if (getActiveDocument() !== current) throw new Error('Active document changed');
+      const copy = await PDFDocument.load(bytes.slice(), { ignoreEncryption: false });
+      const result = await embed3DAnnotation(copy, { pageNumber, rect, modelBytes, format, posterPng, title });
+      const output = await copy.save({ useObjectStreams: true });
+      if (getActiveDocument() !== current) throw new Error('Active document changed');
+      const name = (doc.fileName || 'drawing.pdf').replace(/\.pdf$/i, '') + '-3D.pdf';
+      const destination = await saveFileDialog(name, [{ name: 'PDF', extensions: ['pdf'] }]);
+      if (!destination) return { cancelled: true };
+      // This operation never overwrites the original PDF, even if the user
+      // accidentally chooses its path in the Save As dialog.
+      if (doc.filePath && String(destination).toLowerCase() === String(doc.filePath).toLowerCase())
+        throw new Error('Cannot overwrite the source PDF; choose another path');
+      if (getActiveDocument() !== current) throw new Error('Active document changed');
+      await writeBinaryFile(destination, output);
+      return { ...result, path: destination, size: output.length, saved: true };
+    },
+
     getDocumentInfo() {
       const doc = getActiveDocument();
       // revision: verandert bij elke stap in de undo-geschiedenis; geef hem als
